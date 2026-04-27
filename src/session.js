@@ -76,7 +76,8 @@ class McSession {
 
     this._authflow = new Authflow(this.email, tokenPath, {
       authTitle: Titles.MinecraftNintendoSwitch,
-      deviceType: 'Nintendo'
+      deviceType: 'Nintendo',
+      flow: 'live'
     })
 
     // Pre-fetch the tokens we'll need
