@@ -1,15 +1,3 @@
-/**
- * McSession — advertises a Bedrock server as an Xbox Live game session so
- * friends can join directly through the in-game friends tab.
- *
- * Flow:
- *  1. Authenticate via Microsoft device-code flow (first run opens a browser link)
- *  2. Open an RTA WebSocket to Xbox Live to get a ConnectionId
- *  3. PUT a Minecraft session to the Xbox Session Directory API
- *  4. Ping the real server every N seconds to keep player counts fresh
- *  5. Optionally auto-friend followers so they can see the session
- */
-
 'use strict'
 
 const https = require('https')
@@ -17,7 +5,6 @@ const { v4: uuidv4 } = require('uuid')
 const WebSocket = require('ws')
 const { Authflow, Titles } = require('prismarine-auth')
 
-// ── Xbox Live constants for Minecraft Bedrock ─────────────────────────────────
 const SCID = '4fc10100-5f7a-4470-899b-280835760c07'
 const TEMPLATE = 'MinecraftLobby'
 const RTA_URL = 'wss://rta.xboxlive.com/connect'
@@ -31,19 +18,16 @@ class McSession {
     this.subscriptionId = uuidv4()
     this.connectionId = null
     this.xuid = null
-
-    // Cached tokens keyed by relying party
-    this._tokens = {}
+    this._xbl = null   // single XBL token used for all Xbox Live API calls
     this._authflow = null
 
-    // Live server info (updated on every ping)
     this.serverInfo = {
       name: config.server.name || 'MC Server',
       motd: config.server.motd || 'A Minecraft Server',
       playerCount: 0,
       maxPlayers: config.server.maxPlayers || 20,
-      protocol: 748,       // default — overwritten by first ping
-      version: '1.21.80'  // default — overwritten by first ping
+      protocol: 748,
+      version: '1.21.80'
     }
 
     this._ws = null
@@ -55,17 +39,16 @@ class McSession {
   async start () {
     await this._authenticate()
     await this._connectRTA()
-    await this._pingServer()   // populate real version before first session PUT
+    await this._pingServer()
     await this._createSession()
 
     this._running = true
     setInterval(() => this._tick(), this.config.pingInterval ?? 15_000)
-
     if (this.config.autoFriend) {
       setInterval(() => this._addFollowers(), 30_000)
     }
 
-    console.log(`[${this.email}] ✓ Session live — friends can join through the friends tab`)
+    console.log(`[${this.email}] Session live — friends can join through the friends tab`)
   }
 
   // ── Authentication ──────────────────────────────────────────────────────────
@@ -80,62 +63,46 @@ class McSession {
       flow: 'live'
     })
 
-    // Pre-fetch the tokens we'll need
-    await this._token('https://sessiondirectory.xboxlive.com/')
-    await this._token('https://xboxlive.com')
-    await this._token('https://peoplehub.xboxlive.com')
+    // One general XBL token covers all Xbox Live service APIs
+    this._xbl = await this._authflow.getXboxToken('https://xboxlive.com')
 
-    // Get XUID from the profile API
-    this.xuid = await this._fetchXuid()
+    // XUID is usually in the token; fall back to profile API if not
+    this.xuid = this._xbl.userXUID ?? await this._fetchXuid()
     console.log(`[${this.email}] Authenticated — XUID: ${this.xuid}`)
   }
 
-  async _token (relyingParty) {
-    if (!this._tokens[relyingParty]) {
-      this._tokens[relyingParty] = await this._authflow.getXboxToken(relyingParty)
-    }
-    return this._tokens[relyingParty]
-  }
-
-  _authHeader (token) {
-    return `XBL3.0 x=${token.userHash};${token.XSTSToken}`
+  get _authHeader () {
+    return `XBL3.0 x=${this._xbl.userHash};${this._xbl.XSTSToken}`
   }
 
   async _fetchXuid () {
-    // userXUID is sometimes included directly in the token response
-    const t = await this._token('https://xboxlive.com')
-    if (t.userXUID) return t.userXUID
-
-    // Fallback: query the profile API
     const data = await this._req({
       method: 'GET',
       hostname: 'profile.xboxlive.com',
       path: '/users/me/profile/settings',
-      token: t,
       contractVersion: '2'
     })
-    return data.profileUsers[0].id
+    return data?.profileUsers?.[0]?.id
   }
 
   // ── RTA WebSocket ───────────────────────────────────────────────────────────
 
   async _connectRTA () {
-    const t = await this._token('https://sessiondirectory.xboxlive.com/')
-
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(RTA_URL, { headers: { Authorization: this._authHeader(t) } })
+      const ws = new WebSocket(RTA_URL, {
+        headers: { Authorization: this._authHeader }
+      })
       this._ws = ws
 
       const timeout = setTimeout(() => reject(new Error('RTA connect timeout')), 15_000)
 
       ws.once('open', () => {
-        // Subscribe message: [type=1, reqId, subscriptionPath]
         ws.send(JSON.stringify([1, 1, RTA_SUB_PATH]))
       })
 
       ws.on('message', (raw) => {
         const msg = JSON.parse(raw.toString())
-        // Response: [type=2, reqId, null, {ConnectionId}, null]
+        // [type=2, reqId, null, {ConnectionId}, null]
         if (msg[0] === 2 && msg[1] === 1) {
           clearTimeout(timeout)
           this.connectionId = msg[3].ConnectionId
@@ -148,7 +115,7 @@ class McSession {
 
       ws.on('close', () => {
         if (this._running) {
-          console.log(`[${this.email}] RTA dropped — reconnecting in 5 s…`)
+          console.log(`[${this.email}] RTA dropped — reconnecting in 5 s...`)
           setTimeout(() => this._connectRTA().then(() => this._createSession()).catch(console.error), 5_000)
         }
       })
@@ -177,7 +144,7 @@ class McSession {
           MemberCount: playerCount,
           OnlineCrossPlatformGame: true,
           SupportedConnections: [{
-            ConnectionType: 6,   // 6 = internet / direct IP
+            ConnectionType: 6,
             HostIpAddress: ip,
             HostPort: port,
             RakNetGUID: ''
@@ -213,14 +180,16 @@ class McSession {
       }
     }
 
-    const t = await this._token('https://sessiondirectory.xboxlive.com/')
-    await this._req({
+    const res = await this._req({
       method: 'PUT',
       hostname: 'sessiondirectory.xboxlive.com',
       path: `/serviceconfigs/${SCID}/sessionTemplates/${TEMPLATE}/sessions/${this.sessionName}`,
-      token: t,
       body
     })
+
+    if (res?.code || res?.errorCode) {
+      console.error(`[${this.email}] Session error:`, JSON.stringify(res))
+    }
   }
 
   // ── Server ping ─────────────────────────────────────────────────────────────
@@ -230,7 +199,6 @@ class McSession {
       const { ping } = require('bedrock-protocol')
       const { ip, port } = this.config.server
       const info = await ping({ host: ip, port })
-
       this.serverInfo.playerCount = info.playersOnline ?? this.serverInfo.playerCount
       this.serverInfo.maxPlayers  = info.playersMax    ?? this.serverInfo.maxPlayers
       this.serverInfo.protocol    = info.protocol      ?? this.serverInfo.protocol
@@ -244,25 +212,19 @@ class McSession {
 
   async _addFollowers () {
     try {
-      const t = await this._token('https://peoplehub.xboxlive.com')
       const data = await this._req({
         method: 'GET',
         hostname: 'peoplehub.xboxlive.com',
         path: '/users/me/people/followers?maxItems=100&decoration=detail',
-        token: t,
         contractVersion: '4'
       })
 
-      const xuids = (data?.people ?? []).map(p => p.xuid)
-      const social = await this._token('https://social.xboxlive.com')
-
-      for (const xuid of xuids) {
+      for (const person of data?.people ?? []) {
         try {
           await this._req({
             method: 'PUT',
             hostname: 'social.xboxlive.com',
-            path: `/users/me/people/xuid(${xuid})`,
-            token: social,
+            path: `/users/me/people/xuid(${person.xuid})`,
             contractVersion: '1'
           })
         } catch { /* already friends or rate limited */ }
@@ -283,13 +245,13 @@ class McSession {
 
   // ── HTTP helper ─────────────────────────────────────────────────────────────
 
-  _req ({ method, hostname, path, token, body = null, contractVersion = '107' }) {
+  _req ({ method, hostname, path, body = null, contractVersion = '107' }) {
     return new Promise((resolve, reject) => {
       const bodyStr = body ? JSON.stringify(body) : null
       const headers = {
-        Authorization: this._authHeader(token),
+        Authorization: this._authHeader,
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        Accept: 'application/json',
         'x-xbl-contract-version': contractVersion,
         'Accept-Language': 'en-US'
       }
