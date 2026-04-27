@@ -1,0 +1,15 @@
+{
+  "server": {
+    "ip": "23.160.168.194",
+    "port": 19132,
+    "name": "My MC Server",
+    "motd": "Join via the friends tab!",
+    "maxPlayers": 20
+  },
+  "accounts": [
+    "your-xbox-email@outlook.com"
+  ],
+  "autoFriend": true,
+  "pingInterval": 15000,
+  "tokenPath": "./tokens"
+}

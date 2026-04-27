@@ -1,0 +1,18 @@
+{
+  "name": "mc-connector",
+  "version": "1.0.0",
+  "description": "Make your Minecraft Bedrock server joinable through the Xbox friends tab",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "bedrock-protocol": "^3.43.0",
+    "prismarine-auth": "^2.4.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.17.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
