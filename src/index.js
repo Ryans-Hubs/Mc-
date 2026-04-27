@@ -24,7 +24,7 @@ async function main () {
     try {
       await session.start()
     } catch (err) {
-      console.error(`[${email}] Failed to start:`, err.message)
+      console.error(`[${email}] Failed to start:\n`, err.stack ?? err.message)
       process.exit(1)
     }
   }

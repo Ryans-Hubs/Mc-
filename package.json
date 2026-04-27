@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "bedrock-protocol": "^3.43.0",
-    "prismarine-auth": "^2.4.0",
+    "prismarine-auth": "^3.0.0",
     "uuid": "^9.0.0",
     "ws": "^8.17.0"
   },
